@@ -122,7 +122,7 @@
   </div>
   <div class="card">
     <div class="card-title">👑 ใครเป็นคนจ่าย</div>
-    <p class="section-label">เลือกหัวหน้าครอบครัวที่จ่ายเงินไปก่อน</p>
+    <p class="section-label">เลือกหัวหน้าครอบครัวที่จ่ายเงินไปก่อน (ไม่จำเป็นต้องไปด้วยก็ได้)</p>
     <div class="payer-grid">
       <button class="payer-btn" id="payer-แอร์" onclick="selectPayer('แอร์')">แอร์<br><small style="font-size:0.66rem;opacity:0.7">ครอบครัว 1</small></button>
       <button class="payer-btn" id="payer-โบ๊ท" onclick="selectPayer('โบ๊ท')">โบ๊ท<br><small style="font-size:0.66rem;opacity:0.7">ครอบครัว 2</small></button>
@@ -131,7 +131,7 @@
   </div>
   <div class="card">
     <div class="card-title">👨‍👩‍👧‍👦 ใครไปบ้าง</div>
-    <p class="section-label">เลือกทุกคนที่ร่วมทานในมื้อนี้</p>
+    <p class="section-label">เลือกทุกคนที่ร่วมทานในมื้อนี้ (ผู้จ่ายไม่ต้องอยู่ในรายชื่อนี้ก็ได้)</p>
     <div class="who-grid">
       <button class="who-btn" style="grid-column:1/-1;background:rgba(246,197,73,0.1);border-color:var(--accent);color:var(--accent);font-weight:700;padding:8px;" onclick="selectAll()">⭐ ไปทุกคน</button>
       <button class="who-btn fam1" onclick="toggleWho('แอร์')" id="who-แอร์">แอร์<span class="tag">ครอบ 1</span></button>
@@ -155,7 +155,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const API = 'https://script.google.com/macros/s/AKfycbwqtRBgqU_2V0RcaHDjUxvhfZSD6usOXEIZXrTuxDN8Nlm_CFpzOzalUu1hzFaPNLI/exec';
+const API = 'https://script.google.com/macros/s/AKfycbxhuDaqgC0HUS0E2kOeBdjnqhTt0HbO_CZq_cT24UowgbHTv3ERsnF18O4XyUil9a4/exec';
 
 const MEMBERS = {
   'แอร์':{family:1},'ฝน':{family:1},
@@ -167,9 +167,9 @@ const FAM_CLASS = {1:'c1',2:'c2',3:'c3'};
 
 let selectedPayer = null;
 let selectedWho = new Set();
-let records = [];
-let paidRecords = [];
-let lastRecord = null;      // { type: 'add'|'paid', record, prevRecords, prevPaid, payer, who }
+let records = [];      // รายการอาหารทั้งหมด
+let paidRecords = [];  // รายการที่จ่ายคืนแล้ว เก็บแยกอิสระ ไม่ผูกกับ records
+let lastAction = null; // สำหรับ undo
 
 document.getElementById('inp-date').value = new Date().toISOString().split('T')[0];
 
@@ -177,7 +177,7 @@ function fmtAmt(n) {
   const r = Math.round(n * 100) / 100;
   return r % 1 === 0 ? r.toLocaleString('th-TH') : r.toLocaleString('th-TH', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
-function fmtDebt(n) { return Math.ceil(n).toLocaleString('th-TH'); }
+function fmtDebt(n) { return Math.ceil(Math.max(0,n)).toLocaleString('th-TH'); }
 
 function setSyncStatus(state) {
   const dot = document.getElementById('sync-dot');
@@ -189,7 +189,7 @@ function setSyncStatus(state) {
 
 function jsonp(url) {
   return new Promise((resolve, reject) => {
-    const cb = 'cb_' + Date.now();
+    const cb = 'cb_' + Date.now() + '_' + Math.floor(Math.random()*10000);
     const script = document.createElement('script');
     window[cb] = (data) => { delete window[cb]; document.body.removeChild(script); resolve(data); };
     script.onerror = () => { delete window[cb]; document.body.removeChild(script); reject(new Error('jsonp failed')); };
@@ -198,12 +198,8 @@ function jsonp(url) {
   });
 }
 
-async function apiGet(action) {
-  return jsonp(API + '?action=' + action);
-}
-
+async function apiGet(action) { return jsonp(API + '?action=' + action); }
 async function apiPost(action, body) {
-  // Google Apps Script ไม่รองรับ CORS POST จาก file:// ต้องใช้ GET แทน
   const params = encodeURIComponent(JSON.stringify(body));
   return jsonp(API + '?action=' + action + '&data=' + params);
 }
@@ -212,7 +208,7 @@ async function loadData() {
   setSyncStatus('syncing');
   try {
     const data = await apiGet('getAll');
-    records = data.records || [];
+    records = (data.records || []).filter(r => !r.isPayment);
     paidRecords = data.paid || [];
     setSyncStatus('ok');
   } catch(e) {
@@ -221,8 +217,6 @@ async function loadData() {
   }
   document.getElementById('loading-overlay').classList.add('hidden');
 }
-
-
 
 function selectPayer(name) {
   selectedPayer = name;
@@ -248,7 +242,6 @@ async function addRecord() {
   if (!amount || amount <= 0) return showToast('กรุณาระบุจำนวนเงิน', true);
   if (!selectedPayer) return showToast('กรุณาเลือกผู้จ่าย', true);
   if (selectedWho.size === 0) return showToast('กรุณาเลือกผู้ร่วมทาน', true);
-  if (!selectedWho.has(selectedPayer)) { selectedWho.add(selectedPayer); document.getElementById('who-'+selectedPayer).classList.add('selected'); }
 
   const whoArr = Array.from(selectedWho);
   const perHead = amount / whoArr.length;
@@ -262,11 +255,9 @@ async function addRecord() {
   setSyncStatus('syncing');
   try {
     await loadData();
-    const snapR = JSON.parse(JSON.stringify(records));
-    const snapP = JSON.parse(JSON.stringify(paidRecords));
     records.push(record);
     await apiPost('saveRecord', record);
-    lastRecord = { type:'add', record, prevRecords: snapR, prevPaid: snapP };
+    lastAction = { type:'add', recordId: record.id, record };
     document.getElementById('undo-btn').style.display = 'block';
     resetForm(false);
     showToast('บันทึกสำเร็จ! 🎉');
@@ -280,18 +271,14 @@ async function addRecord() {
 }
 
 async function undoLast() {
-  if (!lastRecord) return showToast('ไม่มีรายการให้ Undo', true);
-  const label = lastRecord.type === 'add' ? `"${lastRecord.record.shop}"` : `การจ่าย ${lastRecord.paid.from} → ${lastRecord.paid.to}`;
-  if (!confirm(`ยกเลิก ${label} ใช่ไหม?`)) return;
+  if (!lastAction) return showToast('ไม่มีรายการให้ Undo', true);
   setSyncStatus('syncing');
   try {
-    records = lastRecord.prevRecords;
-    paidRecords = lastRecord.prevPaid;
-    await apiPost('reset', {});
-    for (const r of records) await apiPost('saveRecord', r);
-    for (const p of paidRecords) await apiPost('savePaid', p);
-    if (lastRecord.type === 'add') {
-      const ref = lastRecord.record;
+    if (lastAction.type === 'add') {
+      if (!confirm(`ยกเลิกรายการ "${lastAction.record.shop}" และนำข้อมูลกลับมาแก้ไข?`)) { setSyncStatus('ok'); return; }
+      await apiPost('deleteRecordById', { id: lastAction.recordId });
+      await loadData();
+      const ref = lastAction.record;
       document.getElementById('inp-date').value = ref.date;
       document.getElementById('inp-shop').value = ref.shop;
       document.getElementById('inp-amount').value = ref.amount;
@@ -299,11 +286,14 @@ async function undoLast() {
       ref.who.forEach(name => { selectedWho.add(name); document.getElementById('who-'+name).classList.add('selected'); });
       showTab('add');
       showToast(`ยกเลิก "${ref.shop}" แล้ว แก้ไขได้เลย`);
-    } else {
+    } else if (lastAction.type === 'paid') {
+      if (!confirm(`ยกเลิกการจ่าย ${lastAction.paid.from} → ${lastAction.paid.to} ใช่ไหม?`)) { setSyncStatus('ok'); return; }
+      await apiPost('deletePaidById', { id: lastAction.paid.id });
+      await loadData();
       showTab('summary');
-      showToast(`ยกเลิกการจ่าย ${lastRecord.paid.from} → ${lastRecord.paid.to} แล้ว`);
+      showToast(`ยกเลิกการจ่าย ${lastAction.paid.from} → ${lastAction.paid.to} แล้ว`);
     }
-    lastRecord = null;
+    lastAction = null;
     document.getElementById('undo-btn').style.display = 'none';
     setSyncStatus('ok');
     renderSummary(); renderHistory(); renderPaid();
@@ -320,24 +310,37 @@ function resetForm(clearUndo = true) {
   selectedPayer = null; selectedWho = new Set();
   document.querySelectorAll('.payer-btn').forEach(b => b.className = 'payer-btn');
   document.querySelectorAll('.who-btn').forEach(b => b.classList.remove('selected'));
-  if (clearUndo) { lastRecord = null; document.getElementById('undo-btn').style.display = 'none'; }
+  if (clearUndo) { lastAction = null; document.getElementById('undo-btn').style.display = 'none'; }
 }
 
-function calcDebts() {
+function calcRawDebts() {
   const debt = {};
   [1,2,3].forEach(f => { debt[f] = {}; [1,2,3].forEach(t => { debt[f][t] = 0; }); });
-  records.forEach(r => { Object.entries(r.debts||{}).forEach(([fam,amt]) => { debt[parseInt(fam)][r.payerFamily] += amt; }); });
+  records.forEach(r => {
+    Object.entries(r.debts||{}).forEach(([fam,amt]) => { debt[parseInt(fam)][r.payerFamily] += amt; });
+  });
+  return debt;
+}
+
+function calcNetDebts() {
+  const debt = calcRawDebts();
+  const paidSum = {};
+  [1,2,3].forEach(f => { paidSum[f] = {}; [1,2,3].forEach(t => { paidSum[f][t] = 0; }); });
+  paidRecords.forEach(p => { paidSum[p.fromFam][p.toFam] += parseFloat(p.amount)||0; });
+  [1,2,3].forEach(f => { [1,2,3].forEach(t => {
+    debt[f][t] = Math.max(0, debt[f][t] - paidSum[f][t]);
+  });});
   return debt;
 }
 
 function renderSummary() {
-  const debt = calcDebts();
+  const debt = calcNetDebts();
   let html = '';
   [1,2,3].forEach(rec => {
     let total = 0, rows = '';
     [1,2,3].forEach(deb => {
       const amt = debt[deb][rec];
-      if (deb !== rec && amt > 0) {
+      if (deb !== rec && amt > 0.5) {
         total += amt;
         rows += `<div class="debt-row">
           <div class="debt-from"><span>${HEADS[deb]}</span> ต้องจ่ายให้ <span>${HEADS[rec]}</span></div>
@@ -359,18 +362,13 @@ function renderSummary() {
 
 async function markPaid(fromFam, toFam, amount) {
   if (!confirm(`บันทึกว่า ${HEADS[fromFam]} จ่ายให้ ${HEADS[toFam]} ฿${fmtDebt(amount)} แล้ว?`)) return;
-  const paid = { id: Date.now(), date: new Date().toISOString().split('T')[0], from: HEADS[fromFam], to: HEADS[toFam], amount, fromFam, toFam };
-  const adj = { id: Date.now()+1, date: paid.date, shop:'[ชำระหนี้]', amount:0, payer:HEADS[toFam], payerFamily:toFam, who:[], perHead:0, debts:{[fromFam]:-amount}, isPayment:true };
+  const paid = { id: Date.now(), date: new Date().toISOString().split('T')[0], from: HEADS[fromFam], to: HEADS[toFam], amount: Math.round(amount*100)/100, fromFam, toFam };
   setSyncStatus('syncing');
   try {
     await loadData();
-    const snapR2 = JSON.parse(JSON.stringify(records));
-    const snapP2 = JSON.parse(JSON.stringify(paidRecords));
     paidRecords.push(paid);
-    records.push(adj);
     await apiPost('savePaid', paid);
-    await apiPost('saveRecord', adj);
-    lastRecord = { type:'paid', paid, adj, prevRecords: snapR2, prevPaid: snapP2 };
+    lastAction = { type:'paid', paid };
     document.getElementById('undo-btn').style.display = 'block';
     showToast(`✅ ${HEADS[fromFam]} จ่ายให้ ${HEADS[toFam]} แล้ว — กด Undo เพื่อยกเลิก`);
     setSyncStatus('ok');
@@ -382,9 +380,8 @@ async function markPaid(fromFam, toFam, amount) {
 }
 
 function renderHistory() {
-  const real = records.filter(r => !r.isPayment);
-  if (!real.length) { document.getElementById('history-content').innerHTML = '<div class="empty">ยังไม่มีรายการ<br><small>เริ่มบันทึกมื้ออาหารแรกได้เลย!</small></div>'; return; }
-  const sorted = [...real].sort((a,b) => new Date(b.date)-new Date(a.date));
+  if (!records.length) { document.getElementById('history-content').innerHTML = '<div class="empty">ยังไม่มีรายการ<br><small>เริ่มบันทึกมื้ออาหารแรกได้เลย!</small></div>'; return; }
+  const sorted = [...records].sort((a,b) => new Date(b.date)-new Date(a.date));
   let html = '';
   sorted.forEach(r => {
     const ds = new Date(r.date+'T00:00:00').toLocaleDateString('th-TH',{day:'numeric',month:'short',year:'numeric'});
@@ -408,15 +405,12 @@ function renderHistory() {
 }
 
 async function deleteRecord(id) {
-  if (!confirm('ลบรายการนี้?\n(ยอดค้างและการจ่ายที่เกี่ยวข้องจะถูกรีเซ็ตด้วย)')) return;
+  if (!confirm('ลบรายการนี้?')) return;
   setSyncStatus('syncing');
   try {
     await loadData();
     records = records.filter(r => r.id !== id);
-    records = records.filter(r => !r.isPayment);
-    paidRecords = [];
-    await apiPost('reset', {});
-    for (const r of records) await apiPost('saveRecord', r);
+    await apiPost('deleteRecordById', { id });
     setSyncStatus('ok');
     renderHistory(); renderSummary(); renderPaid();
     showToast('ลบรายการแล้ว');
@@ -448,7 +442,8 @@ async function resetAll() {
   if (!confirm('ยืนยันอีกครั้ง — ล้างข้อมูลจริงๆ ใช่ไหม?')) return;
   setSyncStatus('syncing');
   try {
-    records = []; paidRecords = [];
+    records = []; paidRecords = []; lastAction = null;
+    document.getElementById('undo-btn').style.display = 'none';
     await apiPost('reset', {});
     setSyncStatus('ok');
     showToast('รีเซ็ตเรียบร้อยแล้ว ✅');
